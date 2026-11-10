@@ -1,10 +1,11 @@
+
 dependencies {
     cloudstream("com.lagradost:cloudstream3:pre-release")
     implementation(kotlin("stdlib"))
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 }
 
-version = 1
+version = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
 
 cloudstream {
     description = "Standalone Miruro anime catalogue and source extension."
@@ -15,4 +16,8 @@ cloudstream {
     iconUrl = "https://www.miruro.cx/favicon.ico"
 }
 
-android { buildFeatures { buildConfig = true } }
+android {
+    buildFeatures {
+        buildConfig = true
+    }
+}
