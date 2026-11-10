@@ -1,18 +1,28 @@
 
-name: Build Miruro CloudStream plugin
+name: Build and publish Miruro CloudStream repository
 
 on:
   push:
     branches: [main, master]
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: miruro-build
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout source
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
@@ -22,16 +32,33 @@ jobs:
         with:
           packages: 'platform-tools'
 
-      - uses: gradle/actions/setup-gradle@v4
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
       - name: Build plugin and repository metadata
         run: gradle make makePluginsJson
 
-      - name: Upload CloudStream extension
+      - name: Prepare repository files
+        run: |
+          mkdir -p public
+          cp Miruro/build/Miruro.cs3 public/
+          cp build/plugins.json public/
+          cp repo.json public/
+
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
           name: Miruro-CloudStream
-          path: Miruro/build/Miruro.cs3
+          path: public/Miruro.cs3
           if-no-files-found: error
+
+      - name: Publish CloudStream repository
+        if: github.event_name != 'pull_request'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: builds
+          publish_dir: ./public
+          force_orphan: true
