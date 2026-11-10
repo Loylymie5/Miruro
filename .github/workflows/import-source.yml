@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - 'MiruroCloudStream-source.zip'
+      - '.github/workflows/import-source.yml'
 
 permissions:
   contents: write
@@ -16,21 +17,35 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.WORKFLOW_TOKEN }}
 
       - name: Extract and install source files
+        shell: bash
         run: |
           set -euo pipefail
 
           ARCHIVE="MiruroCloudStream-source.zip"
           TEMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TEMP_DIR"' EXIT
 
-          test -f "$ARCHIVE"
+          if [[ ! -f "$ARCHIVE" ]]; then
+            echo "Source ZIP not found."
+            exit 1
+          fi
+
+          unzip -t "$ARCHIVE"
           unzip -q "$ARCHIVE" -d "$TEMP_DIR"
 
           PROJECT_DIR="$TEMP_DIR/MiruroCloudStream"
-          test -d "$PROJECT_DIR"
+
+          if [[ ! -d "$PROJECT_DIR" ]]; then
+            echo "Project directory missing."
+            exit 1
+          fi
 
           cp -a "$PROJECT_DIR/." .
+
           rm "$ARCHIVE"
 
           git config user.name "github-actions[bot]"
@@ -38,7 +53,10 @@ jobs:
 
           git add -A
 
-          if ! git diff --cached --quiet; then
-            git commit -m "Import Miruro CloudStream source"
-            git push
+          if git diff --cached --quiet; then
+            echo "No changes to import."
+            exit 0
           fi
+
+          git commit -m "Import Miruro CloudStream source"
+          git push
