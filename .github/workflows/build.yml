@@ -1,3 +1,4 @@
+
 name: Build Miruro CloudStream plugin
 
 on:
@@ -14,7 +15,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - uses: android-actions/setup-android@v3
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platform-tools'
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
