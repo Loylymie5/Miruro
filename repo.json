@@ -1,0 +1,9 @@
+
+{
+  "name": "Miruro",
+  "description": "Standalone Miruro anime catalogue and source extension.",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/Loylymie5/Miruro/builds/plugins.json"
+  ]
+}

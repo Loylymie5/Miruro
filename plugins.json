@@ -1,0 +1,22 @@
+[
+    {
+        "iconUrl": "https://www.miruro.cx/favicon.ico",
+        "fileHash": "sha256-e5cb5c225ba9982594a63dc475f89fc37572f9d377e85ac60807baf46f6c726f",
+        "apiVersion": 1,
+        "repositoryUrl": "https://github.com/Loylymie5/Miruro",
+        "fileSize": 19101,
+        "status": 3,
+        "language": "en",
+        "authors": [
+            "OpenAI"
+        ],
+        "tvTypes": [
+            "Anime"
+        ],
+        "version": 12,
+        "internalName": "Miruro",
+        "description": "Standalone Miruro anime catalogue and source extension.",
+        "url": "https://raw.githubusercontent.com/Loylymie5/Miruro/builds/Miruro.cs3",
+        "name": "Miruro"
+    }
+]
