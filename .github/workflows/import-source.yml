@@ -30,8 +30,8 @@ jobs:
           trap 'rm -rf "$TEMP_DIR"' EXIT
 
           if [[ ! -f "$ARCHIVE" ]]; then
-            echo "Source ZIP not found."
-            exit 1
+            echo "Source ZIP is absent; it may already have been imported. Nothing to do."
+            exit 0
           fi
 
           unzip -t "$ARCHIVE"
