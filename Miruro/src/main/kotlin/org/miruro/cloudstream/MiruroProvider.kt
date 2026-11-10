@@ -33,8 +33,10 @@ class MiruroProvider : MainAPI() {
 
     private val jsonType = "application/json; charset=utf-8".toMediaType()
     private val catalogKey = "miruro/catalog".toByteArray(Charsets.US_ASCII)
+
     private val streamingConfig: JSONObject by lazy {
-        getJson("$mainUrl/api/config").optJSONObject("streaming") ?: JSONObject()
+        getJson("$mainUrl/api/config")
+            .optJSONObject("streaming") ?: JSONObject()
     }
 
     private fun request(
@@ -43,13 +45,19 @@ class MiruroProvider : MainAPI() {
         body: String? = null,
         referer: String = "$mainUrl/"
     ): String {
-        val builder = Request.Builder().url(url)
+        val builder = Request.Builder()
+            .url(url)
             .header("User-Agent", UA)
             .header("Referer", referer)
-            .header("Accept", "application/json, application/octet-stream;q=0.9, */*;q=0.8")
+            .header(
+                "Accept",
+                "application/json, application/octet-stream;q=0.9, */*;q=0.8"
+            )
 
         if (method == "POST") {
-            builder.post((body ?: "{}").toRequestBody(jsonType))
+            builder.post(
+                (body ?: "{}").toRequestBody(jsonType)
+            )
         }
 
         return http.newCall(builder.build()).execute().use { response ->
@@ -57,7 +65,7 @@ class MiruroProvider : MainAPI() {
 
             if (!response.isSuccessful) {
                 throw IllegalStateException(
-                    "Miruro HTTP ${response.code}: ${bytes.toString(Charsets.UTF_8).take(180)}"
+                    "HTTP ${response.code}: ${bytes.toString(Charsets.UTF_8).take(180)}"
                 )
             }
 
@@ -74,7 +82,8 @@ class MiruroProvider : MainAPI() {
         }
     }
 
-    private fun getJson(url: String): JSONObject = JSONObject(request(url))
+    private fun getJson(url: String): JSONObject =
+        JSONObject(request(url))
 
     private fun api(
         path: String,
@@ -92,14 +101,17 @@ class MiruroProvider : MainAPI() {
 
     private fun decodeCatalog(bytes: ByteArray): String {
         val unmasked = ByteArray(bytes.size) { i ->
-            (bytes[i].toInt() xor catalogKey[i % catalogKey.size].toInt()).toByte()
+            (
+                bytes[i].toInt() xor
+                    catalogKey[i % catalogKey.size].toInt()
+            ).toByte()
         }
 
         return GZIPInputStream(ByteArrayInputStream(unmasked))
             .use { it.readBytes().toString(Charsets.UTF_8) }
     }
 
-    private fun String.urlEncode() =
+    private fun String.urlEncode(): String =
         java.net.URLEncoder.encode(this, "UTF-8")
 
     private fun anilist(
@@ -110,9 +122,15 @@ class MiruroProvider : MainAPI() {
         val gql = """
             query (${ '$' }page:Int, ${ '$' }search:String) {
               Page(page:${ '$' }page, perPage:20) {
-                media(type:ANIME, search:${ '$' }search, sort:[$sort], isAdult:false) {
+                media(
+                  type:ANIME,
+                  search:${ '$' }search,
+                  sort:[$sort],
+                  isAdult:false
+                ) {
                   id idMal format status episodes averageScore popularity seasonYear
-                  title { romaji english native } coverImage { extraLarge large }
+                  title { romaji english native }
+                  coverImage { extraLarge large }
                 }
               }
             }
@@ -127,12 +145,42 @@ class MiruroProvider : MainAPI() {
             .put("variables", variables)
 
         val result = JSONObject(
-            request("https://graphql.anilist.co", "POST", payload.toString())
+            request(
+                "https://graphql.anilist.co",
+                "POST",
+                payload.toString()
+            )
         )
 
         return result.optJSONObject("data")
             ?.optJSONObject("Page")
-            ?.optJSONArray("media") ?: JSONArray()
+            ?.optJSONArray("media")
+            ?: JSONArray()
+    }
+
+    private fun anilistById(id: Int): JSONObject? {
+        val gql = """
+            query {
+                Media(id:$id, type:ANIME) {
+                    id
+                    title { romaji english }
+                    description
+                    genres
+                    seasonYear
+                    status
+                    coverImage { extraLarge large }
+                }
+            }
+        """.trimIndent()
+
+        return JSONObject(
+            request(
+                "https://graphql.anilist.co",
+                "POST",
+                JSONObject().put("query", gql).toString()
+            )
+        ).optJSONObject("data")
+            ?.optJSONObject("Media")
     }
 
     private fun mediaTitle(media: JSONObject): String {
@@ -145,21 +193,30 @@ class MiruroProvider : MainAPI() {
             ?: "Unknown anime"
     }
 
-    private fun mediaUrl(media: JSONObject) =
-        "miruro://anilist/${media.optInt("id")}"
+    // CloudStream needs a normal absolute URL here.
+    private fun mediaUrl(media: JSONObject): String =
+        "$mainUrl/anilist/${media.optInt("id")}"
 
-    private fun poster(media: JSONObject) =
+    private fun poster(media: JSONObject): String? =
         media.optJSONObject("coverImage")
             ?.optString("extraLarge")
             ?.takeIf { it.startsWith("http") }
-            ?: media.optJSONObject("coverImage")?.optString("large")
+            ?: media.optJSONObject("coverImage")
+                ?.optString("large")
+                ?.takeIf { it.startsWith("http") }
 
     private fun toSearch(media: JSONObject): SearchResponse =
-        newAnimeSearchResponse(mediaTitle(media), mediaUrl(media), TvType.Anime) {
+        newAnimeSearchResponse(
+            mediaTitle(media),
+            mediaUrl(media),
+            TvType.Anime
+        ) {
             posterUrl = poster(media)
         }
 
-    override suspend fun search(query: String): List<SearchResponse> =
+    override suspend fun search(
+        query: String
+    ): List<SearchResponse> =
         anilist(query, 1, "SEARCH_MATCH")
             .toList()
             .mapNotNull { it as? JSONObject }
@@ -189,72 +246,128 @@ class MiruroProvider : MainAPI() {
     }
 
     override suspend fun load(url: String): LoadResponse? {
-        val id = Regex("""miruro://anilist/(\d+)""")
-            .find(url)?.groupValues?.get(1)?.toIntOrNull() ?: return null
+        // Accept the corrected absolute URL and the previous internal URL.
+        val id = Regex(
+            """(?:/anilist/|miruro://anilist/)(\d+)/?$"""
+        )
+            .find(url)
+            ?.groupValues
+            ?.get(1)
+            ?.toIntOrNull()
+            ?: return null
 
-        val media = anilistById(id) ?: return null
+        // AniList is the primary source for anime details.
+        val media = runCatching {
+            anilistById(id)
+        }.getOrNull() ?: return null
+
         val title = mediaTitle(media)
 
-        val miruroTitle = api(
-            "v1/anime",
-            mapOf("anilist_id_in" to id.toString(), "limit" to "100")
-        ).optJSONArray("data")?.optJSONObject(0) ?: return null
+        // Miruro may reject API requests. Do not let that prevent
+        // the AniList anime detail page from opening.
+        val miruroTitle = runCatching {
+            api(
+                "v1/anime",
+                mapOf(
+                    "anilist_id_in" to id.toString(),
+                    "limit" to "100"
+                )
+            )
+                .optJSONArray("data")
+                ?.optJSONObject(0)
+        }.getOrNull()
 
-        val miruroId = miruroTitle.optString("id")
-            .takeIf { it.isNotBlank() } ?: return null
+        val miruroId = miruroTitle
+            ?.optString("id")
+            ?.takeIf { it.isNotBlank() && it != "null" }
 
-        val episodeRows = fetchEpisodes(miruroId)
-        val counts = miruroTitle.optJSONObject("episode_counts")
-        val subCount = counts?.optInt("sub", episodeRows.size) ?: episodeRows.size
+        // Episode retrieval is optional. An API error produces
+        // an empty episode list rather than a failed detail page.
+        val episodeRows = miruroId?.let {
+            runCatching {
+                fetchEpisodes(it)
+            }.getOrDefault(emptyList())
+        } ?: emptyList()
+
+        val counts = miruroTitle?.optJSONObject("episode_counts")
+
+        val subCount = counts?.optInt("sub", episodeRows.size)
+            ?: episodeRows.size
+
         val dubCount = counts?.optInt("dub", 0) ?: 0
 
         fun makeEpisodes(
             variant: String,
             maxCount: Int
-        ): List<Episode> = episodeRows.mapNotNull { ep ->
-            val number = ep.optDouble("episode_number", -1.0)
-
-            if (number <= 0 || number > maxCount) {
-                return@mapNotNull null
+        ): List<Episode> {
+            if (miruroId == null || maxCount <= 0) {
+                return emptyList()
             }
 
-            val epTitle = ep.optString("title")
-                .takeIf { it.isNotBlank() && it != "null" }
+            return episodeRows.mapNotNull { ep ->
+                val number = ep.optDouble("episode_number", -1.0)
 
-            newEpisode(
-                "miruro://episode/$miruroId/${numberText(number)}/$variant"
-            ) {
-                name = epTitle ?: "Episode ${numberText(number)}"
-                episode = number.toInt()
-                posterUrl = ep.optString("thumbnail_url")
-                    .takeIf { it.startsWith("http") } ?: poster(media)
+                if (number <= 0 || number > maxCount) {
+                    return@mapNotNull null
+                }
 
-                description = buildString {
-                    ep.optString("canon_type")
-                        .takeIf { it.isNotBlank() && it != "null" }
-                        ?.let { append(it.replace('_', ' ')) }
+                val numberString = numberText(number)
 
-                    ep.optString("aired_on")
-                        .takeIf { it.isNotBlank() && it != "null" }
-                        ?.let {
-                            if (isNotEmpty()) append(" • ")
-                            append(it)
-                        }
-                }.ifBlank { null }
+                val epTitle = ep.optString("title")
+                    .takeIf { it.isNotBlank() && it != "null" }
+
+                newEpisode(
+                    "miruro://episode/$miruroId/$numberString/$variant"
+                ) {
+                    name = epTitle ?: "Episode $numberString"
+                    episode = number.toInt()
+
+                    posterUrl = ep.optString("thumbnail_url")
+                        .takeIf { it.startsWith("http") }
+                        ?: poster(media)
+
+                    description = buildString {
+                        ep.optString("canon_type")
+                            .takeIf {
+                                it.isNotBlank() && it != "null"
+                            }
+                            ?.let {
+                                append(it.replace('_', ' '))
+                            }
+
+                        ep.optString("aired_on")
+                            .takeIf {
+                                it.isNotBlank() && it != "null"
+                            }
+                            ?.let {
+                                if (isNotEmpty()) append(" • ")
+                                append(it)
+                            }
+                    }.ifBlank { null }
+                }
             }
         }
 
         val subEpisodes = makeEpisodes("sub", subCount)
         val dubEpisodes = makeEpisodes("dub", dubCount)
 
-        return newAnimeLoadResponse(title, url, TvType.Anime) {
+        return newAnimeLoadResponse(
+            title,
+            url,
+            TvType.Anime
+        ) {
             posterUrl = poster(media)
+
             plot = media.optString("description")
                 .replace(Regex("<[^>]*>"), " ")
                 .takeIf { it.isNotBlank() && it != "null" }
 
-            tags = media.optJSONArray("genres")?.toStringList().orEmpty()
-            year = media.optInt("seasonYear").takeIf { it > 0 }
+            tags = media.optJSONArray("genres")
+                ?.toStringList()
+                .orEmpty()
+
+            year = media.optInt("seasonYear")
+                .takeIf { it > 0 }
 
             showStatus = when (media.optString("status")) {
                 "RELEASING" -> ShowStatus.Ongoing
@@ -267,40 +380,26 @@ class MiruroProvider : MainAPI() {
         }
     }
 
-    private fun anilistById(id: Int): JSONObject? {
-        val gql = """
-            query {
-                Media(id:$id, type:ANIME) {
-                    id
-                    title { romaji english }
-                    description
-                    genres
-                    seasonYear
-                    status
-                    coverImage { extraLarge large }
-                }
-            }
-        """.trimIndent()
-
-        return JSONObject(
-            request(
-                "https://graphql.anilist.co",
-                "POST",
-                JSONObject().put("query", gql).toString()
-            )
-        ).optJSONObject("data")?.optJSONObject("Media")
-    }
-
-    private fun fetchEpisodes(miruroId: String): List<JSONObject> {
+    private fun fetchEpisodes(
+        miruroId: String
+    ): List<JSONObject> {
         val all = mutableListOf<JSONObject>()
         var cursor: String? = null
 
         repeat(30) {
             val params = mutableMapOf("limit" to "10000")
-            if (cursor != null) params["cursor"] = cursor!!
 
-            val page = api("v1/anime/$miruroId/episodes", params)
-            val data = page.optJSONArray("data") ?: return all
+            if (cursor != null) {
+                params["cursor"] = cursor!!
+            }
+
+            val page = api(
+                "v1/anime/$miruroId/episodes",
+                params
+            )
+
+            val data = page.optJSONArray("data")
+                ?: return all
 
             for (i in 0 until data.length()) {
                 val ep = data.optJSONObject(i) ?: continue
@@ -338,8 +437,12 @@ class MiruroProvider : MainAPI() {
         val episodeNo = match.groupValues[2]
         val requestedVariant = match.groupValues[3]
 
-        val play = api("v1/anime/$miruroId/episodes/$episodeNo/play")
-        val tracks = play.optJSONArray("tracks") ?: return false
+        val play = api(
+            "v1/anime/$miruroId/episodes/$episodeNo/play"
+        )
+
+        val tracks = play.optJSONArray("tracks")
+            ?: return false
 
         var emitted = false
 
@@ -347,18 +450,32 @@ class MiruroProvider : MainAPI() {
             val track = tracks.optJSONObject(i) ?: continue
             val trackName = track.optString("track")
 
-            if (requestedVariant == "dub" && trackName != "dub") continue
-            if (requestedVariant == "sub" && trackName !in setOf("sub", "ssub")) continue
+            if (requestedVariant == "dub" && trackName != "dub") {
+                continue
+            }
 
-            val providers = track.optJSONArray("providers") ?: continue
+            if (
+                requestedVariant == "sub" &&
+                trackName !in setOf("sub", "ssub")
+            ) {
+                continue
+            }
+
+            val providers = track.optJSONArray("providers")
+                ?: continue
 
             for (p in 0 until providers.length()) {
-                val provider = providers.optJSONObject(p) ?: continue
+                val provider = providers.optJSONObject(p)
+                    ?: continue
+
                 val providerKey = provider.optString("provider")
-                val subtitles = provider.optJSONArray("subtitles") ?: JSONArray()
+                val subtitles = provider.optJSONArray("subtitles")
+                    ?: JSONArray()
 
                 for (s in 0 until subtitles.length()) {
-                    val sub = subtitles.optJSONObject(s) ?: continue
+                    val sub = subtitles.optJSONObject(s)
+                        ?: continue
+
                     val subUrl = sub.optString("file")
                         .ifBlank { sub.optString("url") }
 
@@ -376,26 +493,34 @@ class MiruroProvider : MainAPI() {
                     }
                 }
 
-                val servers = provider.optJSONArray("servers") ?: continue
+                val servers = provider.optJSONArray("servers")
+                    ?: continue
 
                 for (s in 0 until servers.length()) {
-                    val server = servers.optJSONObject(s) ?: continue
-                    val headers = server.optJSONObject("headers") ?: JSONObject()
+                    val server = servers.optJSONObject(s)
+                        ?: continue
+
+                    val headers = server.optJSONObject("headers")
+                        ?: JSONObject()
 
                     val referer = headers.optString("Referer")
-                        .takeIf { it.startsWith("http") } ?: "$mainUrl/"
+                        .takeIf { it.startsWith("http") }
+                        ?: "$mainUrl/"
 
                     val extraHeaders = mutableMapOf<String, String>()
                     val keys = headers.keys()
 
                     while (keys.hasNext()) {
                         val key = keys.next()
+
                         if (!key.equals("Referer", true)) {
                             extraHeaders[key] = headers.optString(key)
                         }
                     }
 
-                    val streams = server.optJSONArray("streams") ?: JSONArray()
+                    val streams = server.optJSONArray("streams")
+                        ?: JSONArray()
+
                     val embedNode = server.opt("embed")
 
                     val embedUrl = when (embedNode) {
@@ -414,23 +539,33 @@ class MiruroProvider : MainAPI() {
 
                     if (!isEmbedProvider) {
                         for (j in 0 until streams.length()) {
-                            val stream = streams.optJSONObject(j) ?: continue
+                            val stream = streams.optJSONObject(j)
+                                ?: continue
+
                             val streamUrl = stream.optString("url")
 
-                            if (!streamUrl.startsWith("http")) continue
+                            if (!streamUrl.startsWith("http")) {
+                                continue
+                            }
 
-                            val format = stream.optString("format").lowercase()
+                            val format = stream.optString("format")
+                                .lowercase()
+
                             val qualityText = stream.optString("quality")
-                                .ifBlank { server.optString("server") }
+                                .ifBlank {
+                                    server.optString("server")
+                                }
 
                             val quality = Regex("""(\d{3,4})""")
                                 .find(qualityText)
-                                ?.groupValues?.get(1)
+                                ?.groupValues
+                                ?.get(1)
                                 ?.toIntOrNull()
                                 ?: Qualities.Unknown.value
 
                             val type = if (
-                                format == "hls" || streamUrl.contains(".m3u8")
+                                format == "hls" ||
+                                streamUrl.contains(".m3u8")
                             ) {
                                 ExtractorLinkType.M3U8
                             } else {
@@ -455,7 +590,10 @@ class MiruroProvider : MainAPI() {
                         }
                     }
 
-                    if ((isEmbedProvider || !serverEmitted) && embedUrl != null) {
+                    if (
+                        (isEmbedProvider || !serverEmitted) &&
+                        embedUrl != null
+                    ) {
                         try {
                             loadExtractor(
                                 embedUrl,
@@ -466,7 +604,7 @@ class MiruroProvider : MainAPI() {
                                 emitted = true
                             }
                         } catch (_: Exception) {
-                            // Continue resolving other available servers.
+                            // Continue with other available servers.
                         }
                     }
                 }
@@ -481,10 +619,16 @@ class MiruroProvider : MainAPI() {
 
     private fun JSONArray.toStringList(): List<String> =
         (0 until length())
-            .mapNotNull { optString(it).takeIf(String::isNotBlank) }
+            .mapNotNull {
+                optString(it).takeIf(String::isNotBlank)
+            }
 
-    private fun numberText(n: Double) =
-        if (n % 1.0 == 0.0) n.toLong().toString() else n.toString()
+    private fun numberText(n: Double): String =
+        if (n % 1.0 == 0.0) {
+            n.toLong().toString()
+        } else {
+            n.toString()
+        }
 
     companion object {
         private const val UA =
