@@ -1,12 +1,10 @@
-
 package org.miruro.cloudstream
 
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.newExtractorLink
-import com.lagradost.cloudstream3.utils.Qualities
 import com.lagradost.cloudstream3.utils.ExtractorLinkType
-import com.lagradost.cloudstream3.utils.loadExtractor
+import com.lagradost.cloudstream3.utils.Qualities
+import com.lagradost.cloudstream3.utils.newExtractorLink
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -14,6 +12,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.net.URLEncoder
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 import java.util.zip.GZIPInputStream
 
@@ -26,108 +26,50 @@ class MiruroProvider : MainAPI() {
     override var hasQuickSearch = false
 
     private val http = OkHttpClient.Builder()
-        .connectTimeout(12, TimeUnit.SECONDS)
-        .readTimeout(25, TimeUnit.SECONDS)
-        .callTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(15, TimeUnit.SECONDS)
+        .readTimeout(30, TimeUnit.SECONDS)
+        .callTimeout(40, TimeUnit.SECONDS)
         .build()
 
     private val jsonType = "application/json; charset=utf-8".toMediaType()
-    private val catalogKey = "miruro/catalog".toByteArray(Charsets.US_ASCII)
-
-    private val streamingConfig: JSONObject by lazy {
-        getJson("$mainUrl/api/config")
-            .optJSONObject("streaming") ?: JSONObject()
-    }
+    private val base64Url = Base64.getUrlEncoder().withoutPadding()
+    private val base64UrlDecoder = Base64.getUrlDecoder()
 
     private fun request(
         url: String,
         method: String = "GET",
         body: String? = null,
         referer: String = "$mainUrl/"
-    ): String {
+    ): ByteArray {
         val builder = Request.Builder()
             .url(url)
             .header("User-Agent", UA)
             .header("Referer", referer)
-            .header(
-                "Accept",
-                "application/json, application/octet-stream;q=0.9, */*;q=0.8"
-            )
+            .header("Accept", "application/json, text/plain, */*")
 
         if (method == "POST") {
-            builder.post(
-                (body ?: "{}").toRequestBody(jsonType)
-            )
+            builder.post((body ?: "{}").toRequestBody(jsonType))
         }
 
         return http.newCall(builder.build()).execute().use { response ->
             val bytes = response.body?.bytes() ?: ByteArray(0)
-
             if (!response.isSuccessful) {
                 throw IllegalStateException(
                     "HTTP ${response.code}: ${bytes.toString(Charsets.UTF_8).take(180)}"
                 )
             }
-
-            val contentType = response.header("Content-Type")
-                .orEmpty()
-                .substringBefore(';')
-                .trim()
-
-            if (contentType == "application/octet-stream") {
-                decodeCatalog(bytes)
-            } else {
-                bytes.toString(Charsets.UTF_8)
-            }
+            bytes
         }
     }
 
-    private fun getJson(url: String): JSONObject =
-        JSONObject(request(url))
+    private fun requestText(url: String, method: String = "GET", body: String? = null): String =
+        request(url, method, body).toString(Charsets.UTF_8)
 
-    private fun api(
-        path: String,
-        params: Map<String, String> = emptyMap()
-    ): JSONObject {
-        val query = params.entries.joinToString("&") {
-            "${it.key.urlEncode()}=${it.value.urlEncode()}"
-        }
-
-        return getJson(
-            "$mainUrl/api/$path" +
-                if (query.isEmpty()) "" else "?$query"
-        )
-    }
-
-    private fun decodeCatalog(bytes: ByteArray): String {
-        val unmasked = ByteArray(bytes.size) { i ->
-            (
-                bytes[i].toInt() xor
-                    catalogKey[i % catalogKey.size].toInt()
-            ).toByte()
-        }
-
-        return GZIPInputStream(ByteArrayInputStream(unmasked))
-            .use { it.readBytes().toString(Charsets.UTF_8) }
-    }
-
-    private fun String.urlEncode(): String =
-        java.net.URLEncoder.encode(this, "UTF-8")
-
-    private fun anilist(
-        query: String,
-        page: Int = 1,
-        sort: String = "POPULARITY_DESC"
-    ): JSONArray {
+    private fun anilist(query: String, page: Int = 1, sort: String = "POPULARITY_DESC"): JSONArray {
         val gql = """
-            query (${ '$' }page:Int, ${ '$' }search:String) {
-              Page(page:${ '$' }page, perPage:20) {
-                media(
-                  type:ANIME,
-                  search:${ '$' }search,
-                  sort:[$sort],
-                  isAdult:false
-                ) {
+            query (${'$'}page:Int, ${'$'}search:String) {
+              Page(page:${'$'}page, perPage:20) {
+                media(type:ANIME, search:${'$'}search, sort:[$sort], isAdult:false) {
                   id idMal format status episodes averageScore popularity seasonYear
                   title { romaji english native }
                   coverImage { extraLarge large }
@@ -135,292 +77,168 @@ class MiruroProvider : MainAPI() {
               }
             }
         """.trimIndent()
-
         val variables = JSONObject()
             .put("page", page)
             .put("search", query.ifBlank { JSONObject.NULL })
-
-        val payload = JSONObject()
-            .put("query", gql)
-            .put("variables", variables)
-
-        val result = JSONObject(
-            request(
-                "https://graphql.anilist.co",
-                "POST",
-                payload.toString()
-            )
-        )
-
-        return result.optJSONObject("data")
-            ?.optJSONObject("Page")
-            ?.optJSONArray("media")
-            ?: JSONArray()
+        val payload = JSONObject().put("query", gql).put("variables", variables)
+        val result = JSONObject(requestText("https://graphql.anilist.co", "POST", payload.toString()))
+        return result.optJSONObject("data")?.optJSONObject("Page")?.optJSONArray("media") ?: JSONArray()
     }
 
     private fun anilistById(id: Int): JSONObject? {
         val gql = """
             query {
-                Media(id:$id, type:ANIME) {
-                    id
-                    title { romaji english }
-                    description
-                    genres
-                    seasonYear
-                    status
-                    coverImage { extraLarge large }
-                }
+              Media(id:$id, type:ANIME) {
+                id title { romaji english } description genres seasonYear status
+                coverImage { extraLarge large }
+              }
             }
         """.trimIndent()
-
-        return JSONObject(
-            request(
-                "https://graphql.anilist.co",
-                "POST",
-                JSONObject().put("query", gql).toString()
-            )
-        ).optJSONObject("data")
-            ?.optJSONObject("Media")
+        return JSONObject(requestText("https://graphql.anilist.co", "POST", JSONObject().put("query", gql).toString()))
+            .optJSONObject("data")?.optJSONObject("Media")
     }
 
     private fun mediaTitle(media: JSONObject): String {
         val title = media.optJSONObject("title")
-
-        return title?.optString("english")
-            ?.takeIf { it.isNotBlank() && it != "null" }
-            ?: title?.optString("romaji")
-                ?.takeIf { it.isNotBlank() && it != "null" }
+        return title?.optString("english")?.takeIf { it.isNotBlank() && it != "null" }
+            ?: title?.optString("romaji")?.takeIf { it.isNotBlank() && it != "null" }
             ?: "Unknown anime"
     }
 
-    // CloudStream needs a normal absolute URL here.
-    private fun mediaUrl(media: JSONObject): String =
-        "$mainUrl/anilist/${media.optInt("id")}"
+    private fun mediaUrl(media: JSONObject) = "$mainUrl/anilist/${media.optInt("id")}"
 
     private fun poster(media: JSONObject): String? =
-        media.optJSONObject("coverImage")
-            ?.optString("extraLarge")
-            ?.takeIf { it.startsWith("http") }
-            ?: media.optJSONObject("coverImage")
-                ?.optString("large")
-                ?.takeIf { it.startsWith("http") }
+        media.optJSONObject("coverImage")?.optString("extraLarge")?.takeIf { it.startsWith("http") }
+            ?: media.optJSONObject("coverImage")?.optString("large")?.takeIf { it.startsWith("http") }
 
     private fun toSearch(media: JSONObject): SearchResponse =
-        newAnimeSearchResponse(
-            mediaTitle(media),
-            mediaUrl(media),
-            TvType.Anime
-        ) {
+        newAnimeSearchResponse(mediaTitle(media), mediaUrl(media), TvType.Anime) {
             posterUrl = poster(media)
         }
 
-    override suspend fun search(
-        query: String
-    ): List<SearchResponse> =
-        anilist(query, 1, "SEARCH_MATCH")
-            .toList()
-            .mapNotNull { it as? JSONObject }
-            .map(::toSearch)
+    override suspend fun search(query: String): List<SearchResponse> =
+        anilist(query, 1, "SEARCH_MATCH").toObjectList().map(::toSearch)
 
-    override suspend fun getMainPage(
-        page: Int,
-        request: MainPageRequest
-    ): HomePageResponse {
-        val popular = anilist("", page, "POPULARITY_DESC")
-            .toList()
-            .mapNotNull { it as? JSONObject }
-            .map(::toSearch)
-
-        val trending = anilist("", page, "TRENDING_DESC")
-            .toList()
-            .mapNotNull { it as? JSONObject }
-            .map(::toSearch)
-
+    override suspend fun getMainPage(page: Int, request: MainPageRequest): HomePageResponse {
+        val popular = anilist("", page, "POPULARITY_DESC").toObjectList().map(::toSearch)
+        val trending = anilist("", page, "TRENDING_DESC").toObjectList().map(::toSearch)
         return newHomePageResponse(
-            listOf(
-                HomePageList("Popular anime", popular),
-                HomePageList("Trending anime", trending)
-            ),
+            listOf(HomePageList("Popular anime", popular), HomePageList("Trending anime", trending)),
             hasNext = page < 5
         )
     }
 
+    /**
+     * Miruro Pipe request. The request object is base64url-encoded JSON in the `e` query parameter.
+     * The endpoint response is base64url-encoded gzip JSON.
+     */
+    private fun pipe(path: String, query: JSONObject): JSONObject {
+        val payload = JSONObject()
+            .put("path", path)
+            .put("method", "GET")
+            .put("query", query)
+            .put("body", JSONObject.NULL)
+            .put("version", "0.1.0")
+        val encoded = base64Url.encodeToString(payload.toString().toByteArray(Charsets.UTF_8))
+        val raw = request("$mainUrl/api/secure/pipe?e=$encoded")
+        val text = decodePipeResponse(raw)
+        return JSONObject(text)
+    }
+
+    private fun decodePipeResponse(raw: ByteArray): String {
+        // Pipe responses are base64url text containing gzip-compressed JSON.
+        val compact = raw.toString(Charsets.UTF_8).trim()
+        val compressed = try {
+            base64UrlDecoder.decode(compact)
+        } catch (e: IllegalArgumentException) {
+            // Some deployments may return plain JSON; accept that only when it is clearly JSON.
+            if (compact.startsWith("{") || compact.startsWith("[")) return compact
+            throw IllegalStateException("Miruro Pipe returned an unexpected response")
+        }
+        val decoded = try {
+            GZIPInputStream(ByteArrayInputStream(compressed)).use { it.readBytes() }
+        } catch (e: Exception) {
+            // Also accept a base64url-encoded, uncompressed JSON response.
+            compressed
+        }
+        return decoded.toString(Charsets.UTF_8)
+    }
+
+    private fun JSONArray.toObjectList(): List<JSONObject> =
+        (0 until length()).mapNotNull { optJSONObject(it) }
+
+    private fun safeText(obj: JSONObject, vararg keys: String): String? {
+        for (key in keys) {
+            val value = obj.optString(key).trim()
+            if (value.isNotEmpty() && value != "null") return value
+        }
+        return null
+    }
+
+    private fun encodeEpisodeId(id: String): String =
+        base64Url.encodeToString(id.toByteArray(Charsets.UTF_8))
+
+    private fun episodeData(anilistId: Int, provider: String, category: String, episodeId: String): String =
+        "miruro://episode/$anilistId/${provider.urlEncode()}/$category/${encodeEpisodeId(episodeId)}"
+
+    private fun String.urlEncode(): String = URLEncoder.encode(this, "UTF-8")
+
     override suspend fun load(url: String): LoadResponse? {
-        // Accept the corrected absolute URL and the previous internal URL.
-        val id = Regex(
-            """(?:/anilist/|miruro://anilist/)(\d+)/?$"""
-        )
-            .find(url)
-            ?.groupValues
-            ?.get(1)
-            ?.toIntOrNull()
-            ?: return null
-
-        // AniList is the primary source for anime details.
-        val media = runCatching {
-            anilistById(id)
-        }.getOrNull() ?: return null
-
+        val id = Regex("(?:/anilist/|miruro://anilist/)(\\d+)/?$").find(url)
+            ?.groupValues?.get(1)?.toIntOrNull() ?: return null
+        val media = runCatching { anilistById(id) }.getOrNull() ?: return null
         val title = mediaTitle(media)
 
-        // Miruro may reject API requests. Do not let that prevent
-        // the AniList anime detail page from opening.
-        val miruroTitle = runCatching {
-            api(
-                "v1/anime",
-                mapOf(
-                    "anilist_id_in" to id.toString(),
-                    "limit" to "100"
-                )
-            )
-                .optJSONArray("data")
-                ?.optJSONObject(0)
-        }.getOrNull()
+        val episodeResponse = runCatching {
+            pipe("episodes", JSONObject().put("anilistId", id))
+        }.getOrElse { return newAnimeLoadResponse(title, url, TvType.Anime) {
+            posterUrl = poster(media)
+            plot = media.optString("description").replace(Regex("<[^>]*>"), " ").takeIf { it.isNotBlank() && it != "null" }
+            tags = media.optJSONArray("genres")?.toStringList().orEmpty()
+            year = media.optInt("seasonYear").takeIf { it > 0 }
+            addEpisodes(DubStatus.Subbed, emptyList())
+        } }
 
-        val miruroId = miruroTitle
-            ?.optString("id")
-            ?.takeIf { it.isNotBlank() && it != "null" }
+        val providers = episodeResponse.optJSONObject("providers") ?: JSONObject()
+        val subEpisodes = mutableListOf<Episode>()
+        val dubEpisodes = mutableListOf<Episode>()
+        val providerKeys = providers.keys()
 
-        // Episode retrieval is optional. An API error produces
-        // an empty episode list rather than a failed detail page.
-        val episodeRows = miruroId?.let {
-            runCatching {
-                fetchEpisodes(it)
-            }.getOrDefault(emptyList())
-        } ?: emptyList()
-
-        val counts = miruroTitle?.optJSONObject("episode_counts")
-
-        val subCount = counts?.optInt("sub", episodeRows.size)
-            ?: episodeRows.size
-
-        val dubCount = counts?.optInt("dub", 0) ?: 0
-
-        fun makeEpisodes(
-            variant: String,
-            maxCount: Int
-        ): List<Episode> {
-            if (miruroId == null || maxCount <= 0) {
-                return emptyList()
-            }
-
-            return episodeRows.mapNotNull { ep ->
-                val number = ep.optDouble("episode_number", -1.0)
-
-                if (number <= 0 || number > maxCount) {
-                    return@mapNotNull null
-                }
-
-                val numberString = numberText(number)
-
-                val epTitle = ep.optString("title")
-                    .takeIf { it.isNotBlank() && it != "null" }
-
-                newEpisode(
-                    "miruro://episode/$miruroId/$numberString/$variant"
-                ) {
-                    name = epTitle ?: "Episode $numberString"
-                    episode = number.toInt()
-
-                    posterUrl = ep.optString("thumbnail_url")
-                        .takeIf { it.startsWith("http") }
-                        ?: poster(media)
-
-                    description = buildString {
-                        ep.optString("canon_type")
-                            .takeIf {
-                                it.isNotBlank() && it != "null"
-                            }
-                            ?.let {
-                                append(it.replace('_', ' '))
-                            }
-
-                        ep.optString("aired_on")
-                            .takeIf {
-                                it.isNotBlank() && it != "null"
-                            }
-                            ?.let {
-                                if (isNotEmpty()) append(" • ")
-                                append(it)
-                            }
-                    }.ifBlank { null }
+        while (providerKeys.hasNext()) {
+            val providerKey = providerKeys.next()
+            val providerObj = providers.optJSONObject(providerKey) ?: continue
+            val episodeGroups = providerObj.optJSONObject("episodes") ?: providerObj
+            for (category in listOf("sub", "dub")) {
+                val list = episodeGroups.optJSONArray(category) ?: continue
+                for (ep in list.toObjectList()) {
+                    val originalId = safeText(ep, "id", "episodeId", "episode_id") ?: continue
+                    val number = ep.optDouble("number", ep.optDouble("episode", -1.0))
+                    if (number <= 0.0) continue
+                    val numberLabel = if (number % 1.0 == 0.0) number.toInt().toString() else number.toString()
+                    val episode = newEpisode(episodeData(id, providerKey, category, originalId)) {
+                        name = safeText(ep, "title", "name") ?: "Episode $numberLabel"
+                        this.episode = number.toInt()
+                        posterUrl = safeText(ep, "image", "thumbnail", "thumbnail_url") ?: poster(media)
+                        description = safeText(ep, "airDate", "air_date", "duration")
+                    }
+                    if (category == "dub") dubEpisodes.add(episode) else subEpisodes.add(episode)
                 }
             }
         }
 
-        val subEpisodes = makeEpisodes("sub", subCount)
-        val dubEpisodes = makeEpisodes("dub", dubCount)
-
-        return newAnimeLoadResponse(
-            title,
-            url,
-            TvType.Anime
-        ) {
+        return newAnimeLoadResponse(title, url, TvType.Anime) {
             posterUrl = poster(media)
-
-            plot = media.optString("description")
-                .replace(Regex("<[^>]*>"), " ")
-                .takeIf { it.isNotBlank() && it != "null" }
-
-            tags = media.optJSONArray("genres")
-                ?.toStringList()
-                .orEmpty()
-
-            year = media.optInt("seasonYear")
-                .takeIf { it > 0 }
-
+            plot = media.optString("description").replace(Regex("<[^>]*>"), " ").takeIf { it.isNotBlank() && it != "null" }
+            tags = media.optJSONArray("genres")?.toStringList().orEmpty()
+            year = media.optInt("seasonYear").takeIf { it > 0 }
             showStatus = when (media.optString("status")) {
                 "RELEASING" -> ShowStatus.Ongoing
                 "FINISHED" -> ShowStatus.Completed
                 else -> ShowStatus.Ongoing
             }
-
-            addEpisodes(DubStatus.Subbed, subEpisodes)
-            addEpisodes(DubStatus.Dubbed, dubEpisodes)
+            addEpisodes(DubStatus.Subbed, subEpisodes.distinctBy { it.data })
+            addEpisodes(DubStatus.Dubbed, dubEpisodes.distinctBy { it.data })
         }
-    }
-
-    private fun fetchEpisodes(
-        miruroId: String
-    ): List<JSONObject> {
-        val all = mutableListOf<JSONObject>()
-        var cursor: String? = null
-
-        repeat(30) {
-            val params = mutableMapOf("limit" to "10000")
-
-            if (cursor != null) {
-                params["cursor"] = cursor!!
-            }
-
-            val page = api(
-                "v1/anime/$miruroId/episodes",
-                params
-            )
-
-            val data = page.optJSONArray("data")
-                ?: return all
-
-            for (i in 0 until data.length()) {
-                val ep = data.optJSONObject(i) ?: continue
-                val kind = ep.optString("kind")
-
-                if (kind.isBlank() || kind == "regular") {
-                    all += ep
-                }
-            }
-
-            cursor = page.optString("next_cursor")
-                .takeIf {
-                    page.optBoolean("has_more") &&
-                        it.isNotBlank() &&
-                        it != "null"
-                }
-
-            if (cursor == null) return all
-        }
-
-        return all
     }
 
     override suspend fun loadLinks(
@@ -429,206 +247,66 @@ class MiruroProvider : MainAPI() {
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit
     ): Boolean {
-        val match = Regex(
-            """miruro://episode/([^/]+)/([^/]+)/(sub|dub)"""
-        ).find(data) ?: return false
-
-        val miruroId = match.groupValues[1]
-        val episodeNo = match.groupValues[2]
-        val requestedVariant = match.groupValues[3]
-
-        val play = api(
-            "v1/anime/$miruroId/episodes/$episodeNo/play"
-        )
-
-        val tracks = play.optJSONArray("tracks")
-            ?: return false
+        val match = Regex("""miruro://episode/(\\d+)/([^/]+)/(sub|dub)/([^/]+)""").find(data) ?: return false
+        val anilistId = match.groupValues[1].toIntOrNull() ?: return false
+        val provider = java.net.URLDecoder.decode(match.groupValues[2], "UTF-8")
+        val category = match.groupValues[3]
+        val episodeId = try {
+            base64UrlDecoder.decode(match.groupValues[4]).toString(Charsets.UTF_8)
+        } catch (_: Exception) {
+            return false
+        }
+        val encodedEpisodeId = encodeEpisodeId(episodeId)
+        val result = runCatching {
+            pipe(
+                "sources",
+                JSONObject()
+                    .put("episodeId", encodedEpisodeId)
+                    .put("provider", provider)
+                    .put("category", category)
+                    .put("anilistId", anilistId)
+            )
+        }.getOrElse { return false }
 
         var emitted = false
-
-        for (i in 0 until tracks.length()) {
-            val track = tracks.optJSONObject(i) ?: continue
-            val trackName = track.optString("track")
-
-            if (requestedVariant == "dub" && trackName != "dub") {
-                continue
-            }
-
-            if (
-                requestedVariant == "sub" &&
-                trackName !in setOf("sub", "ssub")
-            ) {
-                continue
-            }
-
-            val providers = track.optJSONArray("providers")
-                ?: continue
-
-            for (p in 0 until providers.length()) {
-                val provider = providers.optJSONObject(p)
-                    ?: continue
-
-                val providerKey = provider.optString("provider")
-                val subtitles = provider.optJSONArray("subtitles")
-                    ?: JSONArray()
-
-                for (s in 0 until subtitles.length()) {
-                    val sub = subtitles.optJSONObject(s)
-                        ?: continue
-
-                    val subUrl = sub.optString("file")
-                        .ifBlank { sub.optString("url") }
-
-                    if (subUrl.startsWith("http")) {
-                        subtitleCallback(
-                            SubtitleFile(
-                                sub.optString("label")
-                                    .ifBlank {
-                                        sub.optString("language")
-                                            .ifBlank { "Subtitle" }
-                                    },
-                                subUrl
-                            )
-                        )
-                    }
-                }
-
-                val servers = provider.optJSONArray("servers")
-                    ?: continue
-
-                for (s in 0 until servers.length()) {
-                    val server = servers.optJSONObject(s)
-                        ?: continue
-
-                    val headers = server.optJSONObject("headers")
-                        ?: JSONObject()
-
-                    val referer = headers.optString("Referer")
-                        .takeIf { it.startsWith("http") }
-                        ?: "$mainUrl/"
-
-                    val extraHeaders = mutableMapOf<String, String>()
-                    val keys = headers.keys()
-
-                    while (keys.hasNext()) {
-                        val key = keys.next()
-
-                        if (!key.equals("Referer", true)) {
-                            extraHeaders[key] = headers.optString(key)
-                        }
-                    }
-
-                    val streams = server.optJSONArray("streams")
-                        ?: JSONArray()
-
-                    val embedNode = server.opt("embed")
-
-                    val embedUrl = when (embedNode) {
-                        is JSONObject -> embedNode.optString("url")
-                        is String -> embedNode
-                        else -> ""
-                    }.takeIf { it.startsWith("http") }
-
-                    val providerConfig =
-                        streamingConfig.optJSONObject(providerKey)
-
-                    val isEmbedProvider =
-                        providerConfig?.optString("relationship") == "embed"
-
-                    var serverEmitted = false
-
-                    if (!isEmbedProvider) {
-                        for (j in 0 until streams.length()) {
-                            val stream = streams.optJSONObject(j)
-                                ?: continue
-
-                            val streamUrl = stream.optString("url")
-
-                            if (!streamUrl.startsWith("http")) {
-                                continue
-                            }
-
-                            val format = stream.optString("format")
-                                .lowercase()
-
-                            val qualityText = stream.optString("quality")
-                                .ifBlank {
-                                    server.optString("server")
-                                }
-
-                            val quality = Regex("""(\d{3,4})""")
-                                .find(qualityText)
-                                ?.groupValues
-                                ?.get(1)
-                                ?.toIntOrNull()
-                                ?: Qualities.Unknown.value
-
-                            val type = if (
-                                format == "hls" ||
-                                streamUrl.contains(".m3u8")
-                            ) {
-                                ExtractorLinkType.M3U8
-                            } else {
-                                ExtractorLinkType.VIDEO
-                            }
-
-                            callback(
-                                newExtractorLink(
-                                    source = "Miruro • $providerKey • ${trackName.uppercase()}",
-                                    name = "Miruro • $providerKey • ${trackName.uppercase()}",
-                                    url = streamUrl,
-                                    type = type
-                                ) {
-                                    this.referer = referer
-                                    this.quality = quality
-                                    this.headers = extraHeaders
-                                }
-                            )
-
-                            serverEmitted = true
-                            emitted = true
-                        }
-                    }
-
-                    if (
-                        (isEmbedProvider || !serverEmitted) &&
-                        embedUrl != null
-                    ) {
-                        try {
-                            loadExtractor(
-                                embedUrl,
-                                referer,
-                                subtitleCallback
-                            ) { link ->
-                                callback(link)
-                                emitted = true
-                            }
-                        } catch (_: Exception) {
-                            // Continue with other available servers.
-                        }
-                    }
-                }
-            }
+        val subtitles = result.optJSONArray("subtitles") ?: JSONArray()
+        for (sub in subtitles.toObjectList()) {
+            val subtitleUrl = safeText(sub, "file", "url") ?: continue
+            if (!subtitleUrl.startsWith("http")) continue
+            subtitleCallback(SubtitleFile(safeText(sub, "label", "language", "lang") ?: "Subtitle", subtitleUrl))
         }
 
+        val streams = result.optJSONArray("streams") ?: JSONArray()
+        for (stream in streams.toObjectList()) {
+            val streamUrl = safeText(stream, "url", "file") ?: continue
+            if (!streamUrl.startsWith("http")) continue
+            val typeText = safeText(stream, "type", "format")?.lowercase().orEmpty()
+            val linkType = if (typeText.contains("m3u8") || typeText.contains("hls") || streamUrl.contains(".m3u8")) {
+                ExtractorLinkType.M3U8
+            } else {
+                ExtractorLinkType.VIDEO
+            }
+            val qualityText = safeText(stream, "quality", "label").orEmpty()
+            val quality = Regex("(\\d{3,4})").find(qualityText)?.groupValues?.get(1)?.toIntOrNull()
+                ?: Qualities.Unknown.value
+            callback(
+                newExtractorLink(
+                    source = "Miruro • $provider • ${category.uppercase()}",
+                    name = "Miruro • ${qualityText.ifBlank { provider }}",
+                    url = streamUrl,
+                    type = linkType
+                ) {
+                    this.referer = "$mainUrl/"
+                    this.quality = quality
+                }
+            )
+            emitted = true
+        }
         return emitted
     }
 
-    private fun JSONArray.toList(): List<Any?> =
-        (0 until length()).map { opt(it) }
-
     private fun JSONArray.toStringList(): List<String> =
-        (0 until length())
-            .mapNotNull {
-                optString(it).takeIf(String::isNotBlank)
-            }
-
-    private fun numberText(n: Double): String =
-        if (n % 1.0 == 0.0) {
-            n.toLong().toString()
-        } else {
-            n.toString()
-        }
+        (0 until length()).mapNotNull { optString(it).takeIf { value -> value.isNotBlank() && value != "null" } }
 
     companion object {
         private const val UA =
