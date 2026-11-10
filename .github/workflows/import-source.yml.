@@ -1,0 +1,44 @@
+
+name: Import Miruro source ZIP
+
+on:
+  push:
+    paths:
+      - 'MiruroCloudStream-source.zip'
+
+permissions:
+  contents: write
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract and install source files
+        run: |
+          set -euo pipefail
+
+          ARCHIVE="MiruroCloudStream-source.zip"
+          TEMP_DIR="$(mktemp -d)"
+
+          test -f "$ARCHIVE"
+          unzip -q "$ARCHIVE" -d "$TEMP_DIR"
+
+          PROJECT_DIR="$TEMP_DIR/MiruroCloudStream"
+          test -d "$PROJECT_DIR"
+
+          cp -a "$PROJECT_DIR/." .
+          rm "$ARCHIVE"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add -A
+
+          if ! git diff --cached --quiet; then
+            git commit -m "Import Miruro CloudStream source"
+            git push
+          fi
