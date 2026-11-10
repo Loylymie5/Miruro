@@ -26,10 +26,10 @@ allprojects {
 }
 
 fun Project.cloudstream(configuration: CloudstreamExtension.() -> Unit) =
-    extensions.getByName&lt;CloudstreamExtension&gt;("cloudstream").configuration()
+    extensions.getByName<CloudstreamExtension>("cloudstream").configuration()
 
 fun Project.android(configuration: BaseExtension.() -> Unit) =
-    extensions.getByName&lt;BaseExtension&gt;("android").configuration()
+    extensions.getByName<BaseExtension>("android").configuration()
 
 subprojects {
     apply(plugin = "com.android.library")
@@ -51,7 +51,7 @@ subprojects {
             sourceCompatibility = JavaVersion.VERSION_1_8
             targetCompatibility = JavaVersion.VERSION_1_8
         }
-        tasks.withType&lt;KotlinJvmCompile&gt; {
+        tasks.withType<KotlinJvmCompile> {
             compilerOptions {
                 jvmTarget.set(JvmTarget.JVM_1_8)
                 freeCompilerArgs.addAll(
@@ -64,6 +64,6 @@ subprojects {
     }
 }
 
-task&lt;Delete&gt;("clean") {
+task<Delete>("clean") {
     delete(rootProject.layout.buildDirectory)
 }
